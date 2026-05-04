@@ -62,13 +62,20 @@ function Test-DriveQualified {
     .SYNOPSIS
         Returns $true if the given drive letter exists and has at least
         $script:MinFreeSpaceGB free space.
+
+        -Speculative indicates this is an auto-detection probe of a *preferred
+        default* drive (E:, D:) rather than a user-forced path. When set, a
+        not-ready or not-present drive is logged at `info` rather than `warn`,
+        because falling back to the next candidate is the intended behavior.
     #>
     param(
         [Parameter(Mandatory)]
-        [string]$DriveLetter
+        [string]$DriveLetter,
+        [switch]$Speculative
     )
 
     $slm = $script:SharedLogMessages
+    $notReadyLevel = if ($Speculative) { "info" } else { "warn" }
     $drive = Get-PSDrive -Name $DriveLetter -ErrorAction SilentlyContinue
     $hasDrive = $null -ne $drive
     if (-not $hasDrive) {
@@ -80,11 +87,11 @@ function Test-DriveQualified {
         $driveInfo = New-Object System.IO.DriveInfo("${DriveLetter}:")
         $isDriveReady = $driveInfo.IsReady
         if (-not $isDriveReady) {
-            Write-Log ($slm.messages.driveNotReady -replace '\{drive\}', "${DriveLetter}:") -Level "warn"
+            Write-Log ($slm.messages.driveNotReady -replace '\{drive\}', "${DriveLetter}:") -Level $notReadyLevel
             return $false
         }
     } catch {
-        Write-Log ($slm.messages.driveNotReady -replace '\{drive\}', "${DriveLetter}:") -Level "warn"
+        Write-Log ($slm.messages.driveNotReady -replace '\{drive\}', "${DriveLetter}:") -Level $notReadyLevel
         return $false
     }
 
@@ -134,15 +141,15 @@ function Find-BestDevDrive {
     $slm = $script:SharedLogMessages
     Write-Log $slm.messages.driveAutoDetecting -Level "info"
 
-    # Priority 1: E: drive
-    $isEQualified = Test-DriveQualified -DriveLetter "E"
+    # Priority 1: E: drive (preferred default -- speculative probe, silent fallback)
+    $isEQualified = Test-DriveQualified -DriveLetter "E" -Speculative
     if ($isEQualified) {
         Write-Log ($slm.messages.drivePreferred -replace '\{drive\}', "E:") -Level "success"
         return "E"
     }
 
-    # Priority 2: D: drive
-    $isDQualified = Test-DriveQualified -DriveLetter "D"
+    # Priority 2: D: drive (preferred default -- speculative probe, silent fallback)
+    $isDQualified = Test-DriveQualified -DriveLetter "D" -Speculative
     if ($isDQualified) {
         Write-Log ($slm.messages.drivePreferred -replace '\{drive\}', "D:") -Level "success"
         return "D"
