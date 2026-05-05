@@ -179,12 +179,76 @@ function Sync-ConEmuSettings {
     try {
         Copy-Item -Path $sourceFile -Destination $targetFile -Force
         Write-Log ($msgs.settingsSynced -replace '\{path\}', $targetFile) -Level "success"
-        return $true
     } catch {
         Write-FileError -FilePath $sourceFile -Operation "copy" -Reason "Failed to copy ConEmu.xml to '$targetFile': $_" -Module "Sync-ConEmuSettings"
         Write-Log "Failed to copy ConEmu.xml: $_" -Level "error"
         return $false
     }
+
+    # -- Post-install validation -------------------------------------------
+    return (Test-ConEmuSettingsApplied -TargetFile $targetFile -LogMessages $LogMessages)
+}
+
+function Test-ConEmuSettingsApplied {
+    <#
+    .SYNOPSIS
+        Verifies that ConEmu.xml exists at %APPDATA%\ConEmu\ConEmu.xml, is non-empty,
+        parses as valid XML, and contains the expected <key name="Software"> root.
+        Emits a clear pass/fail summary line. Returns $true on full pass.
+    #>
+    param(
+        [Parameter(Mandatory)] [string]$TargetFile,
+        [Parameter(Mandatory)] $LogMessages
+    )
+    $msgs = $LogMessages.messages
+    Write-Log ($msgs.validateStart -replace '\{path\}', $TargetFile) -Level "info"
+
+    $fileOk = $false; $xmlOk = $false; $bytes = 0; $keys = 0
+
+    if (-not (Test-Path -LiteralPath $TargetFile)) {
+        Write-FileError -FilePath $TargetFile -Operation "validate" -Reason "ConEmu.xml not present after sync" -Module "Test-ConEmuSettingsApplied"
+        Write-Log ($msgs.validateMissing -replace '\{path\}', $TargetFile) -Level "error"
+    } else {
+        $fileOk = $true
+        try { $bytes = (Get-Item -LiteralPath $TargetFile).Length } catch { $bytes = 0 }
+        if ($bytes -le 0) {
+            Write-FileError -FilePath $TargetFile -Operation "validate" -Reason "ConEmu.xml is 0 bytes" -Module "Test-ConEmuSettingsApplied"
+            Write-Log ($msgs.validateEmpty -replace '\{path\}', $TargetFile) -Level "error"
+        } else {
+            try {
+                [xml]$xml = Get-Content -LiteralPath $TargetFile -Raw -ErrorAction Stop
+                $xmlOk = $true
+                $rootKey = $xml.SelectSingleNode("//key[@name='Software']")
+                if ($null -eq $rootKey) {
+                    Write-FileError -FilePath $TargetFile -Operation "validate" -Reason "missing expected <key name='Software'> root element" -Module "Test-ConEmuSettingsApplied"
+                    Write-Log ($msgs.validateNoRoot -replace '\{path\}', $TargetFile) -Level "error"
+                    $xmlOk = $false
+                } else {
+                    $keys = @($xml.SelectNodes("//key")).Count
+                    $okMsg = $msgs.validateOk
+                    $okMsg = $okMsg -replace '\{bytes\}', $bytes
+                    $okMsg = $okMsg -replace '\{keys\}', $keys
+                    $okMsg = $okMsg -replace '\{path\}', $TargetFile
+                    Write-Log $okMsg -Level "success"
+                }
+            } catch {
+                Write-FileError -FilePath $TargetFile -Operation "validate" -Reason "XML parse failed: $($_.Exception.Message)" -Module "Test-ConEmuSettingsApplied"
+                $errMsg = $msgs.validateBadXml -replace '\{path\}', $TargetFile
+                $errMsg = $errMsg -replace '\{error\}', $_.Exception.Message
+                Write-Log $errMsg -Level "error"
+            }
+        }
+    }
+
+    $summary = $msgs.validateSummary
+    $summary = $summary -replace '\{fileOk\}', $(if ($fileOk) { "PASS" } else { "FAIL" })
+    $summary = $summary -replace '\{xmlOk\}',  $(if ($xmlOk)  { "PASS" } else { "FAIL" })
+    $summary = $summary -replace '\{bytes\}',  $bytes
+    $summary = $summary -replace '\{keys\}',   $keys
+    $summary = $summary -replace '\{path\}',   $TargetFile
+    Write-Log $summary -Level $(if ($fileOk -and $xmlOk) { "success" } else { "error" })
+
+    return ($fileOk -and $xmlOk)
 }
 
 function Export-ConEmuSettings {
