@@ -819,16 +819,67 @@ function Resolve-InstallKeywords {
     $remoteMap = $keywordData.remote
 
     $tokens = [System.Collections.Generic.List[string]]::new()
+    $excludeTokens = [System.Collections.Generic.List[string]]::new()
+    $pendingExclude = $false
     foreach ($keywordGroup in $Keywords) {
         $isKeywordGroupMissing = [string]::IsNullOrWhiteSpace($keywordGroup)
         if ($isKeywordGroupMissing) {
             continue
         }
 
+        $rawTrim  = "$keywordGroup".Trim()
+        $rawLower = $rawTrim.ToLower()
+
+        # --exclude / -exclude / --ex / --without (consumes the next arg as CSV/space list)
+        $isExcludeFlag = $rawLower -in @("--exclude","-exclude","--ex","-ex","--without","-without","--skip","-skip")
+        if ($isExcludeFlag) { $pendingExclude = $true; continue }
+
+        # --exclude=val,val (inline form)
+        $hasExcludePrefix = $rawLower.StartsWith("--exclude=") -or $rawLower.StartsWith("-exclude=") -or $rawLower.StartsWith("--ex=") -or $rawLower.StartsWith("-ex=") -or $rawLower.StartsWith("--without=") -or $rawLower.StartsWith("-without=") -or $rawLower.StartsWith("--skip=") -or $rawLower.StartsWith("-skip=")
+        if ($hasExcludePrefix) {
+            $excludeValue = $rawTrim.Substring($rawTrim.IndexOf("=") + 1)
+            $exParts = $excludeValue -split '[,\s]+' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_.Length -gt 0 }
+            foreach ($ep in $exParts) { $excludeTokens.Add($ep) }
+            continue
+        }
+
         $parts = $keywordGroup -split '[,\s]+' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_.Length -gt 0 }
         foreach ($part in $parts) {
-            $tokens.Add($part)
+            if ($pendingExclude) {
+                $excludeTokens.Add($part)
+            } else {
+                $tokens.Add($part)
+            }
         }
+        if ($pendingExclude) { $pendingExclude = $false }
+    }
+
+    # Resolve excludeTokens -> set of script IDs to drop. Each exclude token
+    # is looked up via the same keywordMap so users can write "obs", "vscode",
+    # "conemu", "npp", "wt", "dbeaver" -- whatever maps to a script ID.
+    $excludeIds = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($exTok in $excludeTokens) {
+        $exIds = $keywordMap.$exTok
+        if ($null -eq $exIds) {
+            $exStripped = $exTok -replace '-', ''
+            $exIds = $keywordMap.$exStripped
+        }
+        if ($null -eq $exIds) {
+            Write-Host "  [ WARN ] " -ForegroundColor Yellow -NoNewline
+            Write-Host "Unknown --exclude token: '$exTok' (ignored)"
+            continue
+        }
+        foreach ($exId in $exIds) {
+            if ($exId -is [int] -or ($exId -is [string] -and $exId -match '^\d+$')) {
+                [void]$excludeIds.Add([int]$exId)
+            }
+        }
+    }
+    $hasExcludes = $excludeIds.Count -gt 0
+    if ($hasExcludes) {
+        $excludeList = ($excludeIds | Sort-Object | ForEach-Object { "{0:D2}" -f $_ }) -join ", "
+        Write-Host "  [ INFO ] " -ForegroundColor Cyan -NoNewline
+        Write-Host "Excluding script IDs: $excludeList"
     }
 
     # Mode priority: install+settings > install-only / settings-only > null
